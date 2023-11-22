@@ -1,0 +1,97 @@
+name: Publish cnroute txt
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 22 * * *'
+
+env:
+  CHINA_DOMAIN_LIST_REPO: 'felixonmars/dnsmasq-china-list'
+
+jobs:
+  cnroute_update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare
+        run: |
+          echo "TAG_NAME=$(date +%Y%m%d%H%M%S)" >> $GITHUB_ENV
+
+      - name: Checkout Source code
+        uses: actions/checkout@v4
+
+      - name: Generate cnroute txt
+        run: |
+          chmod +x ${{ github.workspace }}/src/cnroutes.py
+          make sync
+          mkdir -p upload
+          cp ${{ github.workspace }}/cnroute-ipv4.txt ${{ github.workspace }}/upload/
+          cp ${{ github.workspace }}/cnroute-ipv6.txt ${{ github.workspace }}/upload/
+
+      - name: Generate chinalist.txt
+        run: |
+          cd ${{ github.workspace }}/
+          curl --connect-timeout 5 --retry 5 --retry-delay 5 --retry-max-time 25 -sLo accelerated-domains.china.conf https://github.com/${{ env.CHINA_DOMAIN_LIST_REPO }}/raw/master/accelerated-domains.china.conf
+          cat accelerated-domains.china.conf | sed '/^[[:space:]]*$/d' | sed '/^#/ d' | awk '{split($0, arr, "/"); print arr[2]}' | grep "\." | awk '!x[$0]++' > ${{ github.workspace }}/upload/chinalist.txt
+
+      - name: Generate cnroute txt sha256 hash
+        run: |
+          sha256sum ${{ github.workspace }}/upload/cnroute-ipv4.txt > ${{ github.workspace }}/upload/cnroute-ipv4.txt.sha256sum
+          sha256sum ${{ github.workspace }}/upload/cnroute-ipv6.txt > ${{ github.workspace }}/upload/cnroute-ipv6.txt.sha256sum
+
+      - name: Generate geosite/chinalist sha256 hash
+        run: |
+         sha256sum ${{ github.workspace }}/upload/chinalist.txt > ${{ github.workspace }}/upload/chinalist.txt.sha256sum
+
+      - name: Push to "release" branch
+        run: |
+          cd upload
+          git init
+          git config user.name "Epsilon"
+          git config user.email "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
+          git checkout -b release
+          git add .
+          git commit -m "${{ env.TAG_NAME }}"
+          git remote add origin "https://${{ github.actor }}:${{ github.token }}@github.com/${{ github.repository }}"
+          git push -f origin release
+
+      - name: Upload to Releases
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          body: ${{ env.TAG_NAME }}
+          draft: false
+          prerelease: false
+          files: |
+            upload/cnroute*
+            upload/chinalist*
+
+      - name: Remove old Releases
+        uses: dev-drprasad/delete-older-releases@v0.3.2
+        with:
+          keep_latest: 3
+          delete_tags: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      # - name: Upload to Latest Tag
+      #   uses: softprops/action-gh-release@v1
+      #   env:
+      #     GITHUB_TOKEN: ${{ github.token }}
+      #   with:
+      #     tag_name: latest
+      #     body: The latest.
+      #     draft: false
+      #     prerelease: true
+      #     files: |
+      #       upload/cnroute*
+      #       upload/chinalist*
+
+      - name: Remove old Workflow runs records
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          retain_days: 3
+          keep_minimum_runs: 3
